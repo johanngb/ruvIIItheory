@@ -4,6 +4,8 @@ This contains the code to reproduce the results in the manuscript (as well as so
 
 All of the analyses can be run by typing `make` in the root directory.
 
+A docker image is available at https://osf.io/yhvna/
+
 
 
 
