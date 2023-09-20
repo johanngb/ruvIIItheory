@@ -1,3 +1,4 @@
 *.pdf
 *.rda
 *.html
+!brain/brain.rda
