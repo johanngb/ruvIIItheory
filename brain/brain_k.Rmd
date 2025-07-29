@@ -1,0 +1,189 @@
+---
+jupyter:
+  jupytext:
+    formats: ipynb,md:myst,Rmd
+    text_representation:
+      extension: .Rmd
+      format_name: rmarkdown
+      format_version: '1.2'
+      jupytext_version: 1.16.7
+  kernelspec:
+    display_name: R
+    language: R
+    name: ir
+---
+
+```{r}
+library(ruv)
+library(ggplot2)
+library(gridExtra)
+load("brain.rda")
+```
+
+```{r}
+options(repr.plot.width=8, repr.plot.height=6)
+
+gg_additions_region_lab = 
+               list(aes(color=sampleinfo$region, 
+                        shape=sampleinfo$lab, 
+                        size=5, alpha=.7), 
+                    labs(color="Brain Region", 
+                         shape="Laboratory"),
+                    scale_size_identity(guide="none"),
+                    scale_alpha(guide="none"),
+                    theme(legend.text=element_text(size=12),
+                          legend.title=element_text(size=16)),
+                    guides(color = guide_legend(override.aes = list(size = 4)),
+                           shape = guide_legend(override.aes = list(size = 4))),
+                    scale_color_manual(values=c("darkorchid3", "darkorange2", "dodgerblue3")),
+                    xlab("PC 1"),
+                    ylab("PC 2")
+                   ) 
+
+gg_additions_patient_lab =
+               list(aes(color=sampleinfo$patient, 
+                        shape=sampleinfo$lab, 
+                        size=5, alpha=.7), 
+                    labs(color="Subject", 
+                         shape="Laboratory"),
+                    scale_size_identity(guide="none"),
+                    scale_alpha(guide="none"),
+                    theme(legend.text=element_text(size=12),
+                          legend.title=element_text(size=16)),
+                    guides(color = guide_legend(override.aes = list(size = 4)),
+                           shape = guide_legend(override.aes = list(size = 4))),
+                    xlab("PC 1"),
+                    ylab("PC 2")
+                   ) 
+
+gg_additions_sex_region = 
+               list(aes(color=sampleinfo$region, 
+                            shape=sampleinfo$gender, 
+                            size=3, alpha=1, stroke=2), 
+                        labs(color="Brain Region", 
+                             shape="Sex"),
+                        scale_size_identity(guide="none"),
+                        scale_alpha(guide="none"),
+                        scale_shape_manual(values = c("male" = 5, "female" = 3)),
+                        theme(legend.text=element_text(size=12),
+                              legend.title=element_text(size=16)),
+                        guides(color = guide_legend(override.aes = list(size = 4)),
+                               shape = guide_legend(override.aes = list(size = 4))),
+                        scale_color_manual(values=c("darkorchid3", "darkorange2", "dodgerblue3")),
+                        xlab("PC 1"),
+                        ylab("PC 2")
+                       ) 
+
+gg_additions_sex_region_nooutlier = 
+               list(aes(color=sampleinfo$region[-15], 
+                            shape=sampleinfo$gender[-15], 
+                            size=3, alpha=1, stroke=2), 
+                        labs(color="Brain Region", 
+                             shape="Sex"),
+                        scale_size_identity(guide="none"),
+                        scale_alpha(guide="none"),
+                        scale_shape_manual(values = c("male" = 5, "female" = 3)),
+                        theme(legend.text=element_text(size=12),
+                              legend.title=element_text(size=16)),
+                        guides(color = guide_legend(override.aes = list(size = 4)),
+                               shape = guide_legend(override.aes = list(size = 4))),
+                        scale_color_manual(values=c("darkorchid3", "darkorange2", "dodgerblue3")),
+                        xlab("PC 1"),
+                        ylab("PC 2")
+                       ) 
+
+makeplot = function(plotobj, filename, width=8, height=6)
+{
+    print(plotobj)
+    pdf(filename, width=width, height=height)
+    print(plotobj)
+    dev.off()
+}
+```
+
+```{r}
+getfit = function(Y, sampleinfo, geneinfo)
+{
+    fit = RUV2(Y = Y, X = sampleinfo$gender, ctl = rep(TRUE, ncol(Y)), k=0)
+    fit.summary = ruv_summary(Y, fit, sampleinfo, geneinfo)  ## applies limma by default    
+    return(fit.summary)
+}
+```
+
+```{r}
+for (K in c(1,2,5,15,20,30))
+{
+  Y.unadj = Y.norm # Background corrected and quantile normalized; otherwise unadjusted
+  Y.tech  = RUVIII(Y.unadj, replicate.matrix(sampleinfo[,c("patient", "region")]), geneinfo$spikectl, k=K)  # "technical" adjustment
+  Y.ind   = RUVIII(Y.unadj, replicate.matrix(sampleinfo[,c("patient")]),           geneinfo$hkctl,    k=K)  # adjustment treating all samples from same individual as replicates
+
+  fit.unadj = getfit(Y.unadj, sampleinfo, geneinfo)
+  fit.tech  = getfit(Y.tech,  sampleinfo, geneinfo)
+  fit.ind   = getfit(Y.ind,   sampleinfo, geneinfo)
+
+  ## Unadjusted 
+  # Technical note: svdplot centers columns by default
+  plotobj = ruv_svdplot(Y.unadj) + gg_additions_region_lab
+  makeplot(plotobj, paste0("K",K,"_svd_unadj.pdf"))
+
+  ## Technical adjustment
+  plotobj = ruv_svdplot(Y.tech) + gg_additions_region_lab
+  makeplot(plotobj, paste0("K",K,"_svd_techadj.pdf"))
+
+  ## Individual replicates + hk
+  plotobj = ruv_svdplot(Y.ind) + gg_additions_region_lab
+  makeplot(plotobj, paste0("K",K,"_svd_bioadj.pdf"))
+
+  ## Individual replicates + hk
+  plotobj = ruv_svdplot(Y.ind) + gg_additions_patient_lab
+  makeplot(plotobj, paste0("K",K,"_svd_bioadj_bypatient.pdf"))
+
+  plotobj = ruv_hist(fit.unadj) + xlab("p-value")
+  pvalplotwidth = 8
+  pvalplotheight = 4
+  makeplot(plotobj, paste0("K",K,"_pval_unadj.pdf"), width=pvalplotwidth, height=pvalplotheight)
+
+  plotobj = ruv_hist(fit.tech) + xlab("p-value")
+  makeplot(plotobj, paste0("K",K,"_pval_techadj.pdf"), width=pvalplotwidth, height=pvalplotheight)
+
+  plotobj = ruv_hist(fit.ind) + xlab("p-value")
+  makeplot(plotobj, paste0("K",K,"_pval_bioadj.pdf"), width=pvalplotwidth, height=pvalplotheight)
+
+  plotobj = ruv_rankplot(fit.unadj, "pctl") + coord_cartesian(xlim=c(0,50), ylim=c(0,25)) + xlab("Rank")
+  rankplotwidth = 8
+  rankplotheight = 4
+  makeplot(plotobj, paste0("K",K,"_rank_unadj.pdf"), width=rankplotwidth, height=rankplotheight)
+
+  plotobj = ruv_rankplot(fit.tech,  "pctl") + coord_cartesian(xlim=c(0,50), ylim=c(0,25)) + xlab("Rank")
+  makeplot(plotobj, paste0("K",K,"_rank_techadj.pdf"), width=rankplotwidth, height=rankplotheight)
+
+  plotobj = ruv_rankplot(fit.ind,   "pctl") + coord_cartesian(xlim=c(0,50), ylim=c(0,25)) + xlab("Rank")    
+  makeplot(plotobj, paste0("K",K,"_rank_bioadj.pdf"), width=rankplotwidth, height=rankplotheight)
+
+  plotobj = ruv_svdplot(Y.unadj[,geneinfo$pctl]) + gg_additions_region_lab
+  makeplot(plotobj, paste0("K",K,"_svd_xy_unadj.pdf"))
+
+  plotobj = ruv_svdplot(Y.unadj[,geneinfo$pctl]) + gg_additions_sex_region
+  makeplot(plotobj, paste0("K",K,"_svd_xy_unadj_bysex.pdf"))
+
+  plotobj = ruv_svdplot(Y.tech[,geneinfo$pctl]) + gg_additions_sex_region
+  makeplot(plotobj, paste0("K",K,"_svd_xy_techadj_bysex.pdf"))
+
+  plotobj = ruv_svdplot(Y.ind[,geneinfo$pctl]) + gg_additions_sex_region
+  makeplot(plotobj, paste0("K",K,"_svd_xy_bioadj_bysex.pdf"))
+
+  # Create a design matrix for brain region:
+  region_mat = design.matrix(sampleinfo$region)
+  # Regress it out from the "technical-adjusted" dataset
+  Y.tech.region_resid = residop(Y.tech, region_mat)
+
+  plotobj = ruv_svdplot(Y.tech.region_resid[,geneinfo$pctl]) + gg_additions_sex_region
+  makeplot(plotobj, paste0("K",K,"_svd_xy_techregionadj_bysex.pdf"))
+
+  plotobj = ruv_svdplot(Y.tech.region_resid[-15,geneinfo$pctl]) + gg_additions_sex_region_nooutlier
+  makeplot(plotobj, paste0("K",K,"_svd_xy_techregionadj_nooutlier_bysex.pdf"))
+
+  plotobj = ruv_svdplot(Y.tech.region_resid[-15,geneinfo$pctl], k=3:4) + gg_additions_sex_region_nooutlier + xlab("PC 3") + ylab("PC 4")
+  makeplot(plotobj, paste0("K",K,"_svd_xy_techregionadj_nooutlier_pc34_bysex.pdf"))
+}
+```

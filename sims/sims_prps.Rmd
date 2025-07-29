@@ -1,0 +1,303 @@
+---
+jupyter:
+  jupytext:
+    formats: ipynb,md:myst,Rmd
+    text_representation:
+      extension: .Rmd
+      format_name: rmarkdown
+      format_version: '1.2'
+      jupytext_version: 1.16.7
+  kernelspec:
+    display_name: R
+    language: R
+    name: ir
+---
+
+# PRPS Simulations
+
+These simulations are based on the simulations in `sims.Rmd`; please see that file first.
+
+```{r}
+ncores = 20
+```
+
+The number of simulated dataset to generate per simulation setting is 100, but can be changed below.
+
+```{r}
+nsim = 100
+```
+
+```{r}
+# Setup
+library(ruv)
+library(parallel)
+library(ggplot2)
+library(scales)
+library(IRdisplay)
+library(EnvStats, warn.conflicts=FALSE)
+set.seed(123456)
+rerun=FALSE
+```
+
+```{r}
+# Generates data (normal)
+sim.normal = function(ns, nr, n, k, nc)
+{
+  m = ns*nr
+  M0 = replicate.matrix(as.factor(rep(1:ns,each=nr)))                        # M --> M0
+  beta = matrix(0,ns,n)
+  W_trend = matrix(rep(seq(from=-1, to=1, length.out=nr), ns*k), ns*nr, k) * ####
+            matrix(rep(runif(ns*k)*2-1, each=nr), ns*nr, k)                  ####
+  W_stoch = matrix(rnorm(m*k),m,k)                                           ####
+  W0 = W_trend + W_stoch                                                     ####
+  alpha = matrix(rnorm(k*n),k,n)
+  epsilon = matrix(rnorm(m*n),m,n)
+  Y0 = M0%*%beta + W0%*%alpha + epsilon                                      # add 0's
+  ctl = rep(FALSE,ncol(Y0))
+  ctl[1:nc] = TRUE
+  #### Add PSPR    
+  A = t(replicate.matrix(as.factor(rep(1:(ns*2),each=nr/2)))/(nr/2))
+  Y = rbind(A%*%Y0, Y0)  
+  Mpr = replicate.matrix(as.factor(rep(1:ns,each=2)))
+  M = matrix(0, ns*2+ns*nr, ns+ns*nr)
+  M[1:(ns*2),1:(ns)] = Mpr
+  M[(ns*2+1):(ns*2+ns*nr), (ns+1):(ns+ns*nr)] = diag(ns*nr)
+  #### Define W
+  W = rbind(A%*%W0, W0)    
+  return(list(M=M,W=W,alpha=alpha,Y=Y,ctl=ctl))
+}
+```
+
+```{r}
+# Generates data (pareto)
+sim.pareto = function(ns, nr, n, k, nc, shape=5)
+{
+  stdpareto = function(n,shape=5)
+  {
+    mu = shape/(shape-1)
+    sigma = sqrt(shape/((shape-1)^2*(shape-2)))
+    x = rpareto(n,1,shape)
+    x = (x - mu)/sigma
+    return(x)
+  }    
+  m = ns*nr
+  M0 = replicate.matrix(as.factor(rep(1:ns,each=nr)))                        # M --> M0
+  beta = matrix(0,ns,n)
+  W_trend = matrix(rep(seq(from=-1, to=1, length.out=nr), ns*k), ns*nr, k) * ####
+            matrix(rep(runif(ns*k)*2-1, each=nr), ns*nr, k)                  ####
+  W_stoch = matrix(stdpareto(m*k),m,k)                                       ####
+  W0 = W_trend + W_stoch                                                     ####
+  alpha = matrix(stdpareto(k*n),k,n)
+  epsilon = matrix(stdpareto(m*n),m,n)
+  Y = M%*%beta + W0%*%alpha + epsilon                                        # add 0's
+  ctl = rep(FALSE,ncol(Y))
+  ctl[1:nc] = TRUE
+  #### Add PSPR  
+  A = t(replicate.matrix(as.factor(rep(1:(ns*2),each=nr/2)))/(nr/2))
+  Y = rbind(A%*%Y0, Y0)
+  Mpr = replicate.matrix(as.factor(rep(1:ns,each=2)))
+  M = matrix(0, ns*2+ns*nr, ns+ns*nr)
+  M[1:(ns*2),1:(ns)] = Mpr
+  M[(ns*2+1):(ns*2+ns*nr), (ns+1):(ns+ns*nr)] = diag(ns*nr)  
+  #### Define W
+  W = rbind(A%*%W0, W0) 
+  return(list(M=M,W=W,alpha=alpha,Y=Y,ctl=ctl))
+}
+```
+
+```{r}
+Q = function(s, K)
+{
+  Wa = s$W%*%s$alpha
+  E  = s$Y - RUVIII(s$Y, s$M, s$ctl, K) - Wa
+  q2 = svd(E%*%t(E))$d[1] / svd(Wa%*%t(Wa))$d[1]  
+  return(sqrt(q2))
+}
+```
+
+```{r}
+# Parallelization
+psim = function(sim, Q, ns, nr, n, nc, k, K, nsim = 2, ncores = 2)
+{
+    iseed = as.integer(ceiling(runif(1)*1000000000))
+    cl <- makeCluster(ncores)
+    a=clusterCall(cl, function() library(ruv))  
+    a=clusterCall(cl, function() library(EnvStats))                    
+    clusterSetRNGStream(cl, iseed=iseed)
+    rval = parSapply(cl, 1:nsim,
+                          function(sim.i, sim, Q, ns, nr, n, k, nc, K)
+                          {
+                             return(Q(sim(ns,nr,n,k,nc),K)) 
+                          },
+                sim=sim, Q=Q, ns=ns, nr=nr, n=n, k=k, nc=nc, K=K)    
+    stopCluster(cl)
+    return(rval)
+}
+```
+
+```{r}
+runsim = function(label, sim, ns, nr, n, nc, K, k=3, nsim=2, rerun=FALSE, ncores=2)
+{
+  filename = paste0("sim_prps_", label, ".rda")                       ####
+  if (!file.exists(filename) | rerun)
+  {
+    m = ns*nr
+    q = matrix(NA,nsim,length(m))
+    colnames(q) = m
+    if (length(ns)==1) ns = rep(ns,length(m))
+    if (length(nr)==1) nr = rep(nr,length(m))      
+    for (i in 1:length(m)) q[,i] = psim(sim,Q,ns[i],nr[i],n(m[i]),nc(m[i]),k,K,nsim,ncores)
+    save(q,file=filename)
+    return(q)
+  }
+  else
+  {
+    load(filename)  
+    return(q)
+  }
+}
+```
+
+```{r}
+plotq = function(q, params)
+{
+  nsim = nrow(q)
+  m_n  = ncol(q)
+    
+  log2m = log2(as.numeric(colnames(q)))
+  log2q = apply(log2(q),2,mean)
+  
+  # Slope of last 2 points
+  logsampsize = log2m[(m_n-1):m_n]      
+  logsampsize = rep(logsampsize, each=nsim)
+  logratio = log2(c(q[,m_n-1],q[,m_n]))
+  summ = summary(lm(logratio~logsampsize))$coef[,1:2]
+  mhat = round(summ[2,1],3)
+  se   = round(summ[2,2],3)
+
+  # Line
+  x = c(log2m[1], log2m[m_n])
+  y = summ[1,1] + summ[2,1]*x
+  d2 = data.frame(x,y)
+    
+  # Annotation
+  annx0  = (log2m[m_n-1] + log2m[m_n])/2
+  anny0 = log2q[1]
+  annx1 =  annx0 - .5
+  annx2 =  annx0 - .5    
+  anny1 = anny0 - 0.4
+  anny2 = anny0 - 0.4   
+  ann1 = paste0("slope:\nSE:")
+  ann2 = paste0(" ", sprintf('%.3f', mhat),"\n  ",sprintf('%.3f', se))
+
+  # Plot  
+  plt = qplot(log2m,log2q) + 
+                             #geom_line() +
+                             ylim(-4.5,-0.9) +                                                             ####
+                             xlab(bquote(Sample~size~(log[2]~m))) + ylab(bquote(Error~(log[2]~q))) + 
+                             theme_bw() + 
+                             theme(text=element_text(size=18)) + 
+                             geom_line(aes(x, y), colour="gray", linetype="dashed", size=1.5, d2) +
+                             geom_point(size=4) + 
+                             annotate(geom="text", x=annx1, y=anny1, hjust=1, label=ann1, color="black", size=7) + 
+                             annotate(geom="text", x=annx2, y=anny2, hjust=0, label=ann2, color="black", size=7) 
+  
+  # Output
+  #print(plt + ggtitle(params$label))
+  pdf(paste0("prps_", params$label, ".pdf"))   ####
+  print(plt)
+  dev.off()
+}
+```
+
+```{r}
+## Functions
+sc2m       = function(m) {return(2*m)}
+sc.5m1.5   = function(m) {return(floor(0.5*m^1.5))}
+sc.125m2   = function(m) {return(m^2/8)}
+scm2       = function(m) {return(m^2)}
+## Constants
+k = 3
+Kbig = 10
+Kmax = NULL
+m.fix = 2^2
+m.inc = 2^(2:7) 
+rerun = FALSE
+## Lists
+ # Full original:
+ # distros = list(normal = sim.normal, pareto = sim.pareto)
+ # scales  = list("2m" = sc2m, "0.5m1.5" = sc.5m1.5, "0.125m2" = sc.125m2, "m2" = scm2)
+ # Ks = list("Ktrue" = k, "Kbig" = Kbig, "Kmax" = Kmax)
+ # incs = list("samp.inc" = function(const, inc) {return(list(ns=inc, nr=const))}, "rep.inc" = function (const, inc) {return(list(ns=const, nr=inc))})
+distros = list(normal = sim.normal)
+scales  = list("0.125m2" = sc.125m2, "m2" = scm2)
+Ks = list("Ktrue" = k)
+incs = list("samp.inc" = function(const, inc) {return(list(ns=inc, nr=const))})
+```
+
+```{r}
+r = list()
+for (distro.i in 1:length(distros))
+{
+  r[[distro.i]] = list()
+  for (ncscale.i in 1:length(scales))
+  {
+    r[[distro.i]][[ncscale.i]] = list()    
+    for (nscale.i in ncscale.i:length(scales))
+    {
+      r[[distro.i]][[ncscale.i]][[nscale.i]] = list()    
+      for (K.i in 1:length(Ks))
+      {
+        r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]] = list()              
+        for (inc.i in 1:length(incs))
+        {
+          r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]] = list()
+          r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]]$label = paste0(
+            names(distros)[[distro.i ]],          
+            "_nc",  
+            names(scales )[[ncscale.i]],          
+            "_n",  
+            names(scales )[[nscale.i ]],          
+            "_",
+            names(Ks     )[[K.i      ]],          
+            "_",
+            names(incs   )[[inc.i]]          
+          )
+          r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]]$params = list(  
+            label  = r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]]$label,
+            sim    = distros[[distro.i]],
+            ns     = incs[[inc.i]](m.fix, m.inc)[[1]],
+            nr     = incs[[inc.i]](m.fix, m.inc)[[2]],
+            n      = scales[[nscale.i]],
+            nc     = scales[[ncscale.i]],
+            K      = Ks[[K.i]],
+            k      = k,
+            nsim   = nsim,
+            ncores = ncores
+          )
+          r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]]$q = runsim(  
+            label  = r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]]$params$label,
+            sim    = r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]]$params$sim,
+            ns     = r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]]$params$ns,
+            nr     = r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]]$params$nr,
+            n      = r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]]$params$n,
+            nc     = r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]]$params$nc,
+            K      = r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]]$params$K,
+            k      = r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]]$params$k,  
+            nsim   = r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]]$params$nsim,
+            rerun  = rerun, 
+            ncores = r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]]$params$ncores           
+          )    
+          save(r, file="prps_results.rda")                    ####
+          plotq(r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]]$q, r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]][[inc.i]]$params)
+        }
+        names(r[[distro.i]][[ncscale.i]][[nscale.i]][[K.i]]) = names(incs)
+      }
+      names(r[[distro.i]][[ncscale.i]][[nscale.i]]) = names(Ks)
+    }
+    names(r[[distro.i]][[ncscale.i]]) = paste0("n", names(scales))
+  }
+  names(r[[distro.i]]) = paste0("nc", names(scales))
+}
+names(r) = names(distros)
+```
