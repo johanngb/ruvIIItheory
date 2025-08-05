@@ -4,9 +4,12 @@ all: brain sims
 
 brain:
 	cd brain && R -e 'rmarkdown::render("brain.Rmd")'
+	cd brain && R -e 'rmarkdown::render("brain_k.Rmd")'
 	
 sims:
 	cd sims && R -e 'rmarkdown::render("sims.Rmd")'
+	cd sims && R -e 'rmarkdown::render("sims_k012.Rmd")'
+	cd sims && R -e 'rmarkdown::render("sims_prps.Rmd")'	
 
 clean:
 	echo "Deleting all output..."
